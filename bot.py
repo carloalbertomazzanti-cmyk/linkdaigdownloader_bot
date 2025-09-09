@@ -5,13 +5,14 @@ Created on Tue Sep  9 17:30:49 2025
 @author: MACA
 """
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+import os
 import re
 import requests
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
 
-API_TOKEN = "8419360224:AAFhhmY7rUloLc25I87649iF9jE_0PDEbPY"
-RAPIDAPI_KEY = "79c4f11226msh1ee21ab35454578p1a0671jsn86c6b70eaefa"
+API_TOKEN = os.getenv("API_TOKEN")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
@@ -23,8 +24,6 @@ async def handle_instagram_links(message: types.Message):
 
     if match:
         url = match.group(1)
-
-        # Call API to get media links
         api_url = "https://instagram-downloader-download-instagram-videos-stories.p.rapidapi.com/index"
         headers = {"X-RapidAPI-Key": RAPIDAPI_KEY}
         params = {"url": url}
@@ -45,3 +44,4 @@ async def handle_instagram_links(message: types.Message):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
