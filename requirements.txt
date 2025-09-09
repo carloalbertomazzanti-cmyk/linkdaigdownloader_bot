@@ -1,5 +1,5 @@
 aiogram==2.25.1
 requests
-aiohttp==3.8.5 --only-binary=:all:
-yarl==1.9.2 --only-binary=:all:
-multidict==6.0.4 --only-binary=:all:
+aiohttp==3.8.5
+yarl==1.9.2
+multidict==6.0.4
