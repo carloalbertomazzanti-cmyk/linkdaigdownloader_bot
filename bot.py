@@ -10,11 +10,13 @@ import re
 import requests
 import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
 from aiohttp import web
 
 API_TOKEN = os.getenv("API_TOKEN")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+
+# Change this to your channel username or ID
+CHANNEL_ID = "@linkdaig"   # or -1001234567890
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
@@ -36,13 +38,13 @@ async def handle_instagram_links(message: types.Message):
             if "media" in response:
                 for media_url in response["media"]:
                     if media_url.endswith(".mp4"):
-                        await message.answer_video(media_url)
+                        await bot.send_video(CHANNEL_ID, media_url)
                     else:
-                        await message.answer_photo(media_url)
+                        await bot.send_photo(CHANNEL_ID, media_url)
             else:
-                await message.answer("⚠️ Could not fetch media.")
+                await message.reply("⚠️ Could not fetch media.")
         except Exception as e:
-            await message.answer(f"❌ Error: {str(e)}")
+            await message.reply(f"❌ Error: {str(e)}")
 
 # ---- Fake web server for Render ----
 async def handle(request):
