@@ -51,15 +51,22 @@ async def handle(request):
     return web.Response(text="Bot is running!")
 
 async def on_startup(app):
+    # Start bot polling in background
     loop = asyncio.get_event_loop()
     loop.create_task(dp.start_polling(bot))
+
+async def on_cleanup(app):
+    # Close bot session properly
+    await bot.session.close()
 
 def main():
     app = web.Application()
     app.router.add_get("/", handle)
     app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
     web.run_app(app, port=int(os.getenv("PORT", 8080)))
-
+    
 if __name__ == "__main__":
     main()
+
 
