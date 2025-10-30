@@ -17,8 +17,8 @@ import time
 from pathlib import Path
 from instaloader import Instaloader, Post
 
-TG_TOKEN = os.environ[8419360224:AAFhhmY7rUloLc25I87649iF9jE_0PDEbPY]
-TARGET_CHANNEL = os.environ[@linkdaig]  # e.g. "@mychannel" or "-1001234567890"
+TG_TOKEN = os.environ['TELEGRAM_TOKEN']
+TARGET_CHANNEL = os.environ['TARGET_CHANNEL']  # e.g. "@mychannel" or "-1001234567890"
 OFFSET_FILE = "offset.txt"
 WORKDIR = Path("downloads")
 WORKDIR.mkdir(exist_ok=True)
@@ -166,6 +166,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
