@@ -23,7 +23,7 @@ jobs:
       - name: Debug env (temporary)
         run: |
           echo "Channel = $TARGET_CHANNEL"
-          env:
+        env:
           TARGET_CHANNEL: ${{ secrets.TARGET_CHANNEL }}
       - name: Run bot
         env:
