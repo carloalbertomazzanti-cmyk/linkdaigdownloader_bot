@@ -23,6 +23,8 @@ jobs:
           pip install instaloader requests
       - name: Run bot
         env:
+          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TARGET_CHANNEL: ${{ secrets.TARGET_CHANNEL }}
         run: |
