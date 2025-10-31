@@ -9,162 +9,144 @@ Created on Tue Sep  9 17:30:49 2025
 # Telegram Instagram relay bot — no-cost version using GitHub Actions
 # Downloads public Instagram posts and relays them to a Telegram channel with author & caption.
 import os
+import base64
 import requests
 import instaloader
-import time
-import json
 import shutil
 
-# === CONFIG ===
+# -------------------
+# Configuration
+# -------------------
+USERNAME = os.environ.get("INSTAGRAM_USERNAME")
+SESSION_FILE_LOCAL = "session.txt"  # Optional local file in repo
+SESSION_SECRET_ENV = "INSTA_SESSION_B64"  # GitHub secret name
+
 TG_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TARGET_CHANNEL = os.environ["TARGET_CHANNEL"]
 
 DOWNLOAD_DIR = "downloads"
-OFFSET_FILE = "offset.txt"
 
-# Optional Instagram login (recommended)
-IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME")
-IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD")
+# -------------------
+# Instagram setup
+# -------------------
+L = instaloader.Instaloader(dirname_pattern=DOWNLOAD_DIR, download_comments=False, save_metadata=False)
 
-# === TELEGRAM HELPERS ===
-def get_updates(offset=None):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
-    params = {"timeout": 30}
-    if offset:
-        params["offset"] = offset
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    return r.json()
+# Try loading local session file first
+if os.path.exists(SESSION_FILE_LOCAL):
+    try:
+        L.load_session_from_file(USERNAME, SESSION_FILE_LOCAL)
+        print("✅ Logged in using local session file.")
+    except Exception as e:
+        print(f"⚠️ Failed to load local session: {e}")
 
+# Otherwise, try GitHub Base64 secret
+elif os.environ.get(SESSION_SECRET_ENV):
+    try:
+        session_data = base64.b64decode(os.environ[SESSION_SECRET_ENV])
+        with open("session_from_secret", "wb") as f:
+            f.write(session_data)
+        L.load_session_from_file(USERNAME, "session_from_secret")
+        print("✅ Logged in using Base64 session secret.")
+    except Exception as e:
+        print(f"⚠️ Failed to load session from secret: {e}")
+
+# If both fail, try username/password login (optional)
+elif USERNAME and os.environ.get("INSTAGRAM_PASSWORD"):
+    try:
+        L.login(USERNAME, os.environ["INSTAGRAM_PASSWORD"])
+        print("✅ Logged in using username/password.")
+    except Exception as e:
+        print(f"⚠️ Login failed: {e}")
+else:
+    print("⚠️ No valid Instagram login method found. Exiting.")
+    exit(1)
+
+# -------------------
+# Telegram helper functions
+# -------------------
 def send_text(chat_id, text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    r = requests.post(url, data=data)
+    r = requests.post(url, data={"chat_id": chat_id, "text": text})
     r.raise_for_status()
-    return r.json()
+
 
 def send_document(chat_id, path, caption=None):
-    if not os.path.exists(path):
-        print(f"⚠️ File not found, skipping: {path}")
-        return
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendDocument"
     with open(path, "rb") as f:
         files = {"document": f}
-        data = {"chat_id": chat_id, "caption": caption or ""}
-        r = requests.post(url, data=data, files=files)
+        data = {"chat_id": chat_id, "caption": caption} if caption else {"chat_id": chat_id}
+        r = requests.post(url, files=files, data=data)
         r.raise_for_status()
-    print(f"✅ Sent {os.path.basename(path)} to {chat_id}")
 
-# === INSTAGRAM DOWNLOADER ===
-def download_instagram(url):
-    """Download media, caption, and author info from a public IG post."""
-    shortcode = url.rstrip("/").split("/")[-1]
+
+# -------------------
+# Download Instagram post
+# -------------------
+def download_post(url):
+    try:
+        shortcode = url.rstrip("/").split("/")[-1].split("?")[0]
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+    except Exception as e:
+        print(f"❌ Error fetching post metadata: {e}")
+        return None
+
     outdir = os.path.join(DOWNLOAD_DIR, f"post_{shortcode}")
     os.makedirs(outdir, exist_ok=True)
 
-    L = instaloader.Instaloader(
-        dirname_pattern=outdir,
-        filename_pattern="{shortcode}_{index}",
-        download_comments=False,
-        save_metadata=False,
-        download_video_thumbnails=False
-    )
+    media_files = []
 
-    # Try using session file from GitHub secrets
-    session_data = os.environ.get("INSTAGRAM_SESSION")
-    if session_data:
+    # Download images/videos
+    for i, node in enumerate(post.get_sidecar_nodes() if post.typename == "GraphSidecar" else [post]):
+        filename = f"{i}_{node.shortcode}.mp4" if node.is_video else f"{i}_{node.shortcode}.jpg"
+        path = os.path.join(outdir, filename)
         try:
-            with open("session.txt", "w") as f:
-                f.write(session_data)
-            L.load_session_from_file(IG_USERNAME, "session.txt")
-            print("✅ Logged in using session file.")
+            L.download_pic(path, node.url, node.date_utc)
+            media_files.append(path)
         except Exception as e:
-            print(f"⚠️ Session login failed: {e}")
-    elif IG_USERNAME and IG_PASSWORD:
-        try:
-            L.login(IG_USERNAME, IG_PASSWORD)
-            print("✅ Logged in with credentials.")
-        except Exception as e:
-            print(f"⚠️ Login failed: {e}")
+            print(f"⚠️ Failed to download media: {e}")
 
-
-    try:
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        L.download_post(post, target=outdir)
-    except Exception as e:
-        print(f"❌ Error downloading Instagram post: {e}")
+    if not media_files:
+        print("⚠️ No media downloaded.")
         return None
 
-    media = []
-    for f in os.listdir(outdir):
-        if f.lower().endswith((".jpg", ".jpeg", ".png", ".mp4")):
-            media.append({"path": os.path.join(outdir, f)})
+    return {
+        "media": media_files,
+        "caption": post.caption or "",
+        "author": post.owner_username,
+        "url": url,
+    }
 
-    if not media:
-        print("⚠️ No media files found — likely 403 or private post.")
-        return None
 
-    caption = post.caption or ""
-    author = post.owner_username or "unknown"
-    return {"media": media, "caption": caption, "author": author, "url": url}
-
-# === MESSAGE HANDLER ===
-def process_message(text):
-    if "instagram.com" not in text:
-        return
-
-    data = download_instagram(text)
+# -------------------
+# Process message
+# -------------------
+def process_message(url):
+    data = download_post(url)
     if not data:
-        send_text(TARGET_CHANNEL, f"❗Could not download media.\n{text}")
+        try:
+            send_text(TARGET_CHANNEL, f"❗Could not download media for:\n{url}")
+        except Exception as e:
+            print(f"⚠️ Telegram error sending failure message: {e}")
         return
 
     caption_text = f"📸 {data['author']}\n\n{data['caption']}\n\n🔗 {data['url']}"
-    for m in data["media"]:
-        if not os.path.exists(m["path"]):
-            print(f"⚠️ Missing file, skipping: {m['path']}")
-            continue
+    for file_path in data["media"]:
         try:
-            send_document(TARGET_CHANNEL, m["path"], caption_text)
+            send_document(TARGET_CHANNEL, file_path, caption_text)
         except Exception as e:
-            print(f"❌ Error sending {m['path']}: {e}")
+            print(f"⚠️ Error sending media to Telegram: {e}")
 
-    shutil.rmtree(os.path.dirname(data["media"][0]["path"]), ignore_errors=True)
-    print("✅ Post complete.")
 
-# === MAIN LOOP ===
-def main():
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    offset = 0
-
-    if os.path.exists(OFFSET_FILE):
-        with open(OFFSET_FILE, "r") as f:
-            try:
-                offset = int(f.read().strip())
-            except ValueError:
-                offset = 0
-
-    try:
-        updates = get_updates(offset + 1)
-        for u in updates.get("result", []):
-            update_id = u["update_id"]
-            message = u.get("message", {})
-            text = message.get("text")
-
-            if text:
-                print(f"📩 Received: {text}")
-                process_message(text)
-
-            offset = update_id
-
-        with open(OFFSET_FILE, "w") as f:
-            f.write(str(offset))
-        print("Cycle complete.")
-
-    except Exception as e:
-        print(f"❌ Error in main loop: {e}")
-
+# -------------------
+# Main loop (for testing)
+# -------------------
 if __name__ == "__main__":
-    main()
+    while True:
+        text = input("Enter Instagram link: ").strip()
+        if text.lower() in ["exit", "quit"]:
+            break
+        process_message(text)
+        print("✅ Done processing.\n")
 
 
 
