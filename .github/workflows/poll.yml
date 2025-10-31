@@ -28,6 +28,7 @@ jobs:
           TARGET_CHANNEL: ${{ secrets.TARGET_CHANNEL }}
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+          INSTAGRAM_SESSION: ${{ secrets.INSTAGRAM_SESSION }}
         run: |
           python bot.py
 
