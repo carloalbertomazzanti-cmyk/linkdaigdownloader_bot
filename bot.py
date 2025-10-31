@@ -70,12 +70,23 @@ def download_instagram(url):
         download_video_thumbnails=False
     )
 
-    if IG_USERNAME and IG_PASSWORD:
+    # Try using session file from GitHub secrets
+    session_data = os.environ.get("INSTAGRAM_SESSION")
+    if session_data:
+        try:
+            with open("session.txt", "w") as f:
+                f.write(session_data)
+            L.load_session_from_file(IG_USERNAME, "session.txt")
+            print("✅ Logged in using session file.")
+        except Exception as e:
+            print(f"⚠️ Session login failed: {e}")
+    elif IG_USERNAME and IG_PASSWORD:
         try:
             L.login(IG_USERNAME, IG_PASSWORD)
-            print("✅ Logged into Instagram successfully.")
+            print("✅ Logged in with credentials.")
         except Exception as e:
             print(f"⚠️ Login failed: {e}")
+
 
     try:
         post = instaloader.Post.from_shortcode(L.context, shortcode)
@@ -154,6 +165,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
