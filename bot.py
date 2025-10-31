@@ -8,168 +8,152 @@ Created on Tue Sep  9 17:30:49 2025
 # bot.py
 # Telegram Instagram relay bot — no-cost version using GitHub Actions
 # Downloads public Instagram posts and relays them to a Telegram channel with author & caption.
-
 import os
-import re
-import json
 import requests
+import instaloader
 import time
-from pathlib import Path
-from instaloader import Instaloader, Post
+import json
+import shutil
 
-TG_TOKEN = os.environ['TELEGRAM_TOKEN']
-TARGET_CHANNEL = os.environ['TARGET_CHANNEL']  # e.g. "@mychannel" or "-1001234567890"
+# === CONFIG ===
+TG_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TARGET_CHANNEL = os.environ["TARGET_CHANNEL"]
+
+DOWNLOAD_DIR = "downloads"
 OFFSET_FILE = "offset.txt"
-WORKDIR = Path("downloads")
-WORKDIR.mkdir(exist_ok=True)
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TG_TOKEN}"
+# Optional Instagram login (recommended)
+IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME")
+IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD")
 
-INSTAGRAM_URL_RE = re.compile(r"(https?://(www\.)?instagram\.com/(p|reel)/[A-Za-z0-9_\-]+)/?")
-
-def read_offset():
-    try:
-        return int(Path(OFFSET_FILE).read_text().strip())
-    except:
-        return 0
-
-def write_offset(o):
-    Path(OFFSET_FILE).write_text(str(o))
-
-def get_updates(offset):
-    params = {"offset": offset, "timeout": 20}
-    r = requests.get(f"{TELEGRAM_API}/getUpdates", params=params, timeout=30)
+# === TELEGRAM HELPERS ===
+def get_updates(offset=None):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
+    r = requests.get(url, params=params)
     r.raise_for_status()
-    return r.json().get("result", [])
+    return r.json()
 
 def send_text(chat_id, text):
-    r = requests.post(f"{TELEGRAM_API}/sendMessage", data={
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": False
-    })
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    r = requests.post(url, data=data)
     r.raise_for_status()
-
-def send_media_group(chat_id, media):
-    url = f"{TELEGRAM_API}/sendMediaGroup"
-    files = {}
-    payload_media = []
-    for i, item in enumerate(media):
-        fname = f"file{i}"
-        payload_media.append({
-            "type": item["type"],
-            "media": f"attach://{fname}",
-            **({"caption": item["caption"]} if "caption" in item and item["caption"] else {})
-        })
-        files[fname] = open(item["path"], "rb")
-    data = {"chat_id": chat_id, "media": json.dumps(payload_media)}
-    r = requests.post(url, data=data, files=files, timeout=120)
-    for f in files.values():
-        f.close()
-    r.raise_for_status()
+    return r.json()
 
 def send_document(chat_id, path, caption=None):
-    url = f"{TELEGRAM_API}/sendDocument"
-    files = {"document": open(path, "rb")}
-    data = {"chat_id": chat_id}
-    if caption:
-        data["caption"] = caption
-    r = requests.post(url, data=data, files=files, timeout=120)
-    files["document"].close()
-    r.raise_for_status()
+    if not os.path.exists(path):
+        print(f"⚠️ File not found, skipping: {path}")
+        return
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendDocument"
+    with open(path, "rb") as f:
+        files = {"document": f}
+        data = {"chat_id": chat_id, "caption": caption or ""}
+        r = requests.post(url, data=data, files=files)
+        r.raise_for_status()
+    print(f"✅ Sent {os.path.basename(path)} to {chat_id}")
 
-def download_instagram(url, outdir):
+# === INSTAGRAM DOWNLOADER ===
+def download_instagram(url):
+    """Download media, caption, and author info from a public IG post."""
     shortcode = url.rstrip("/").split("/")[-1]
-    L = Instaloader(dirname_pattern=str(outdir), filename_pattern="{shortcode}_{index}")
+    outdir = os.path.join(DOWNLOAD_DIR, f"post_{shortcode}")
+    os.makedirs(outdir, exist_ok=True)
+
+    L = instaloader.Instaloader(
+        dirname_pattern=outdir,
+        filename_pattern="{shortcode}_{index}",
+        download_comments=False,
+        save_metadata=False,
+        download_video_thumbnails=False
+    )
+
+    if IG_USERNAME and IG_PASSWORD:
+        try:
+            L.login(IG_USERNAME, IG_PASSWORD)
+            print("✅ Logged into Instagram successfully.")
+        except Exception as e:
+            print(f"⚠️ Login failed: {e}")
+
     try:
-        post = Post.from_shortcode(L.context, shortcode)
-        author = post.owner_username
-        caption = post.caption or ""
-        paths = []
-        for idx, node in enumerate(post.get_sidecar_nodes() if post.typename == "GraphSidecar" else [post]):
-            filename = f"{shortcode}_{idx}.jpg" if node.is_video is False else f"{shortcode}_{idx}.mp4"
-            target = outdir / filename
-            if node.is_video:
-                L.download_pic(str(target), node.video_url, post.date_utc)
-            else:
-                L.download_pic(str(target), node.display_url, post.date_utc)
-            paths.append(str(target))
-        return {
-            "author": author,
-            "caption": caption,
-            "shortcode": shortcode,
-            "files": paths
-        }
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        L.download_post(post, target=outdir)
     except Exception as e:
-        print("Error downloading Instagram post:", e)
+        print(f"❌ Error downloading Instagram post: {e}")
         return None
 
-def process_message(text):
-    m = INSTAGRAM_URL_RE.search(text)
-    if not m:
-        return False
-    url = m.group(1)
-    outdir = WORKDIR / f"post_{int(time.time())}"
-    outdir.mkdir(parents=True, exist_ok=True)
-    data = download_instagram(url, outdir)
-    if not data:
-        send_text(TARGET_CHANNEL, f"⚠️ Could not download media.\n{url}")
-        return True
-    caption_text = f"📸 <b>@{data['author']}</b>\n\n{data['caption'] or ''}\n\n🔗 {url}"
-    # prepare media
     media = []
-    for p in data["files"]:
-        ext = p.lower().split(".")[-1]
-        if ext in ("jpg", "jpeg", "png", "webp"):
-            media.append({"type": "photo", "path": p})
-        elif ext in ("mp4", "mov", "mkv", "webm"):
-            media.append({"type": "video", "path": p})
-        else:
-            media.append({"type": "document", "path": p})
-    # Send media
-    try:
-        if 1 < len(media) <= 10:
-            # add caption only to first item
-            media[0]["caption"] = caption_text
-            send_media_group(TARGET_CHANNEL, media)
-        elif len(media) == 1:
-            if media[0]["type"] in ("photo", "video"):
-                send_document(TARGET_CHANNEL, media[0]["path"], caption_text)
-            else:
-                send_document(TARGET_CHANNEL, media[0]["path"], caption_text)
-        else:
-            send_text(TARGET_CHANNEL, caption_text)
-        return True
-    except Exception as e:
-        print("Error sending media:", e)
-        send_text(TARGET_CHANNEL, f"❗Error sending media.\n{url}")
-        return True
+    for f in os.listdir(outdir):
+        if f.lower().endswith((".jpg", ".jpeg", ".png", ".mp4")):
+            media.append({"path": os.path.join(outdir, f)})
 
+    if not media:
+        print("⚠️ No media files found — likely 403 or private post.")
+        return None
+
+    caption = post.caption or ""
+    author = post.owner_username or "unknown"
+    return {"media": media, "caption": caption, "author": author, "url": url}
+
+# === MESSAGE HANDLER ===
+def process_message(text):
+    if "instagram.com" not in text:
+        return
+
+    data = download_instagram(text)
+    if not data:
+        send_text(TARGET_CHANNEL, f"❗Could not download media.\n{text}")
+        return
+
+    caption_text = f"📸 {data['author']}\n\n{data['caption']}\n\n🔗 {data['url']}"
+    for m in data["media"]:
+        if not os.path.exists(m["path"]):
+            print(f"⚠️ Missing file, skipping: {m['path']}")
+            continue
+        try:
+            send_document(TARGET_CHANNEL, m["path"], caption_text)
+        except Exception as e:
+            print(f"❌ Error sending {m['path']}: {e}")
+
+    shutil.rmtree(os.path.dirname(data["media"][0]["path"]), ignore_errors=True)
+    print("✅ Post complete.")
+
+# === MAIN LOOP ===
 def main():
-    offset = read_offset()
-    updates = get_updates(offset + 1)
-    max_offset = offset
-    for u in updates:
-        upd_id = u["update_id"]
-        if upd_id <= offset:
-            continue
-        max_offset = max(max_offset, upd_id)
-        msg = u.get("message") or u.get("channel_post") or u.get("edited_message")
-        if not msg:
-            continue
-        text = msg.get("text") or msg.get("caption") or ""
-        if text:
-            process_message(text)
-    if max_offset > offset:
-        write_offset(max_offset + 1)
-    print("Cycle complete.")
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    offset = 0
+
+    if os.path.exists(OFFSET_FILE):
+        with open(OFFSET_FILE, "r") as f:
+            try:
+                offset = int(f.read().strip())
+            except ValueError:
+                offset = 0
+
+    try:
+        updates = get_updates(offset + 1)
+        for u in updates.get("result", []):
+            update_id = u["update_id"]
+            message = u.get("message", {})
+            text = message.get("text")
+
+            if text:
+                print(f"📩 Received: {text}")
+                process_message(text)
+
+            offset = update_id
+
+        with open(OFFSET_FILE, "w") as f:
+            f.write(str(offset))
+        print("Cycle complete.")
+
+    except Exception as e:
+        print(f"❌ Error in main loop: {e}")
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
 
 
